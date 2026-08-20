@@ -53,6 +53,7 @@ internal sealed class MainForm : Form
     private DateTime _gifSegmentStartedAt;
     private GifRecordingBar? _gifBar;
     private RecordingBorderForm? _gifBorder;
+    private CapturePreviewToast? _captureToast;
 
     private Panel? _activeNavButton;
     private Panel? _hoveredSideButton;
@@ -721,13 +722,117 @@ internal sealed class MainForm : Form
 
     // ---- Settings tab (storage + hotkeys + startup, consolidated) ----
 
+    /// <summary>Settings is a narrow vertical category list (Storage / Hotkeys / GIF Recording / Editor
+    /// Toolbar / After Capture / Startup) — same left-accent-bar visual language as the app's own main
+    /// Captures/Settings side nav, just nested one level in — over a single content area showing
+    /// whichever section is selected. A horizontal tab strip was tried first but clipped/overflowed
+    /// once there were more than ~4 categories at the app's normal window width; a vertical list has
+    /// no such ceiling — it just grows downward, which is also the pattern most desktop apps (VS Code,
+    /// JetBrains, macOS System Settings) use for exactly this "many settings groups" problem.</summary>
     private (Panel, TextBox folderBox, TextBox regionBox, TextBox fullscreenBox, TextBox gifBox) BuildSettingsPanel()
     {
-        var root = new Panel { BackColor = TerminalTheme.Background, AutoScroll = true };
-        int y = 0;
+        var root = new Panel { BackColor = TerminalTheme.Background, Dock = DockStyle.Fill };
+        var contentHost = new Panel { Dock = DockStyle.Fill, BackColor = TerminalTheme.Background };
+        var categoryNav = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Left,
+            Width = 150,
+            BackColor = TerminalTheme.PanelBg,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoScroll = true,
+            Padding = new Padding(8, 10, 8, 10)
+        };
+        root.Controls.Add(contentHost);
+        root.Controls.Add(categoryNav);
 
-        root.Controls.Add(BuildSectionDivider("STORAGE", y));
-        y += 30;
+        var (storagePanel, folderBox) = BuildStorageSection();
+        var (hotkeysPanel, regionBox, fullBox, gifBox) = BuildHotkeysSection();
+        var gifRecordingPanel = BuildGifRecordingSection();
+        var editorToolbarPanel = BuildEditorToolbarSection();
+        var afterCapturePanel = BuildAfterCaptureSection();
+        var startupPanel = BuildStartupSection();
+
+        var sections = new (string Label, Panel Panel)[]
+        {
+            ("Storage", storagePanel),
+            ("Hotkeys", hotkeysPanel),
+            ("GIF Recording", gifRecordingPanel),
+            ("Editor Toolbar", editorToolbarPanel),
+            ("After Capture", afterCapturePanel),
+            ("Startup", startupPanel),
+        };
+
+        foreach (var (_, panel) in sections)
+        {
+            panel.Visible = panel == storagePanel;
+            contentHost.Controls.Add(panel);
+        }
+
+        Panel? activeCategoryButton = null;
+        Panel activeSectionPanel = storagePanel;
+
+        foreach (var (label, panel) in sections)
+        {
+            Panel categoryButton = null!;
+            categoryButton = BuildSettingsCategoryButton(label, () =>
+            {
+                if (activeSectionPanel == panel) return;
+                activeSectionPanel.Visible = false;
+                panel.Visible = true;
+                activeSectionPanel = panel;
+
+                var previous = activeCategoryButton;
+                activeCategoryButton = categoryButton;
+                previous?.Invalidate();
+                categoryButton.Invalidate();
+            }, () => activeCategoryButton == categoryButton);
+
+            if (panel == storagePanel) activeCategoryButton = categoryButton;
+            categoryNav.Controls.Add(categoryButton);
+        }
+
+        return (root, folderBox, regionBox, fullBox, gifBox);
+    }
+
+    /// <summary>Fixed-size, owner-drawn vertical nav row — same recipe as the main window's own
+    /// side-nav buttons (Surface0 fill + 3px accent left bar when active) — for consistency between
+    /// the two levels of navigation.</summary>
+    private Panel BuildSettingsCategoryButton(string text, Action onClick, Func<bool> isActive)
+    {
+        var btn = new Panel { Size = new Size(132, 32), Cursor = Cursors.Hand, Margin = new Padding(0, 0, 0, 2) };
+        bool hovered = false;
+
+        btn.Paint += (_, e) =>
+        {
+            bool active = isActive();
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using var bg = new SolidBrush(active ? TerminalTheme.Surface0 : (hovered ? TerminalTheme.Surface1 : TerminalTheme.PanelBg));
+            e.Graphics.FillRectangle(bg, 0, 0, btn.Width, btn.Height);
+            if (active)
+            {
+                using var pen = new Pen(TerminalTheme.Accent, 3f);
+                e.Graphics.DrawLine(pen, 1, 1, 1, btn.Height - 2);
+            }
+
+            using var font = new Font(MonoFont.FamilyName, 9f);
+            using var textBrush = new SolidBrush(active ? TerminalTheme.TextPrimary : TerminalTheme.TextMuted);
+            var size = e.Graphics.MeasureString(text, font);
+            e.Graphics.DrawString(text, font, textBrush, 12, (btn.Height - size.Height) / 2f);
+        };
+        btn.MouseEnter += (_, _) => { hovered = true; btn.Invalidate(); };
+        btn.MouseLeave += (_, _) => { hovered = false; btn.Invalidate(); };
+        btn.Click += (_, _) => onClick();
+
+        return btn;
+    }
+
+    private static Panel BuildSectionPanel() => new() { Dock = DockStyle.Fill, AutoScroll = true, BackColor = TerminalTheme.Background };
+
+    private (Panel, TextBox folderBox) BuildStorageSection()
+    {
+        var root = BuildSectionPanel();
+        int y = 16;
 
         var folderLabel = new Label { Text = "Screenshots folder:", ForeColor = TerminalTheme.TextPrimary, AutoSize = true, Location = new Point(0, y + 4) };
         var folderBox = new TextBox
@@ -765,10 +870,14 @@ internal sealed class MainForm : Form
         root.Controls.Add(folderBox);
         root.Controls.Add(browseBtn);
         root.Controls.Add(openBtn);
-        y += 44;
 
-        root.Controls.Add(BuildSectionDivider("HOTKEYS", y));
-        y += 30;
+        return (root, folderBox);
+    }
+
+    private (Panel, TextBox regionBox, TextBox fullscreenBox, TextBox gifBox) BuildHotkeysSection()
+    {
+        var root = BuildSectionPanel();
+        int y = 16;
 
         var regionLabel = new Label { Text = "Capture Region:", ForeColor = TerminalTheme.TextPrimary, AutoSize = true, Location = new Point(0, y + 4) };
         var regionBox = new TextBox
@@ -815,12 +924,43 @@ internal sealed class MainForm : Form
         root.Controls.Add(gifChangeBtn);
         y += 44;
 
+        var hideWhileCapturing = new CheckBox
+        {
+            Text = "Hide SnapTool's window while capturing",
+            ForeColor = TerminalTheme.TextPrimary,
+            Font = new Font(MonoFont.FamilyName, 9f),
+            AutoSize = true,
+            Location = new Point(0, y),
+            Checked = _settings.HideWindowWhileCapturing
+        };
+        hideWhileCapturing.CheckedChanged += (_, _) =>
+        {
+            _settings.HideWindowWhileCapturing = hideWhileCapturing.Checked;
+            _settings.Save();
+        };
+        y += 20;
+        var hideWhileCapturingHint = new Label
+        {
+            Text = "Uncheck to be able to include SnapTool's own window in a capture.",
+            ForeColor = TerminalTheme.TextMuted,
+            Font = new Font(MonoFont.FamilyName, 7.8f),
+            AutoSize = true,
+            Location = new Point(0, y)
+        };
+        root.Controls.Add(hideWhileCapturing);
+        root.Controls.Add(hideWhileCapturingHint);
+
         regionBox.KeyDown += HotkeyTextBox_KeyDown;
         fullBox.KeyDown += HotkeyTextBox_KeyDown;
         gifBox.KeyDown += HotkeyTextBox_KeyDown;
 
-        root.Controls.Add(BuildSectionDivider("GIF RECORDING", y));
-        y += 30;
+        return (root, regionBox, fullBox, gifBox);
+    }
+
+    private Panel BuildGifRecordingSection()
+    {
+        var root = BuildSectionPanel();
+        int y = 16;
 
         var fpsLabel = new Label { Text = "Frame rate:", ForeColor = TerminalTheme.TextPrimary, AutoSize = true, Location = new Point(0, y + 4) };
         var fpsCombo = new ComboBox
@@ -850,36 +990,27 @@ internal sealed class MainForm : Form
         };
         root.Controls.Add(fpsLabel);
         root.Controls.Add(fpsCombo);
-        y += 44;
 
-        root.Controls.Add(BuildSectionDivider("EDITOR TOOLBAR", y));
-        y += 30;
+        return root;
+    }
+
+    private Panel BuildEditorToolbarSection()
+    {
+        var root = BuildSectionPanel();
+        int y = 16;
 
         var toolbarLabel = new Label { Text = "Default position:", ForeColor = TerminalTheme.TextPrimary, AutoSize = true, Location = new Point(0, y + 16) };
         var toolbarPicker = BuildToolbarPositionPicker(y);
         root.Controls.Add(toolbarLabel);
         root.Controls.Add(toolbarPicker);
-        y += 62;
 
-        root.Controls.Add(BuildSectionDivider("STARTUP", y));
-        y += 30;
+        return root;
+    }
 
-        var startWithWindows = new CheckBox
-        {
-            Text = "Start SnapTool with Windows",
-            ForeColor = TerminalTheme.TextPrimary,
-            Font = new Font(MonoFont.FamilyName, 9f),
-            AutoSize = true,
-            Location = new Point(0, y),
-            Checked = _settings.StartWithWindows
-        };
-        startWithWindows.CheckedChanged += (_, _) =>
-        {
-            _settings.StartWithWindows = startWithWindows.Checked;
-            _settings.Save();
-            SetStartWithWindows(startWithWindows.Checked);
-        };
-        y += 28;
+    private Panel BuildAfterCaptureSection()
+    {
+        var root = BuildSectionPanel();
+        int y = 16;
 
         var autoSave = new CheckBox
         {
@@ -911,22 +1042,109 @@ internal sealed class MainForm : Form
             _settings.AutoCopyToClipboard = autoCopy.Checked;
             _settings.Save();
         };
+        y += 36;
 
-        root.Controls.Add(startWithWindows);
+        var afterCaptureLabel = new Label { Text = "When a screenshot is captured:", ForeColor = TerminalTheme.TextPrimary, Font = new Font(MonoFont.FamilyName, 9f), AutoSize = true, Location = new Point(0, y) };
+        y += 22;
+        var afterCapturePicker = BuildAfterCaptureActionPicker(y);
+
         root.Controls.Add(autoSave);
         root.Controls.Add(autoCopy);
+        root.Controls.Add(afterCaptureLabel);
+        root.Controls.Add(afterCapturePicker);
 
-        return (root, folderBox, regionBox, fullBox, gifBox);
+        return root;
     }
 
-    private static Label BuildSectionDivider(string label, int y) => new()
+    private Panel BuildStartupSection()
     {
-        Text = $"── {label} ──",
-        ForeColor = TerminalTheme.AccentDim,
-        Font = new Font(MonoFont.FamilyName, 9f, FontStyle.Bold),
-        AutoSize = true,
-        Location = new Point(0, y)
-    };
+        var root = BuildSectionPanel();
+        int y = 16;
+
+        var startWithWindows = new CheckBox
+        {
+            Text = "Start SnapTool with Windows",
+            ForeColor = TerminalTheme.TextPrimary,
+            Font = new Font(MonoFont.FamilyName, 9f),
+            AutoSize = true,
+            Location = new Point(0, y),
+            Checked = _settings.StartWithWindows
+        };
+        startWithWindows.CheckedChanged += (_, _) =>
+        {
+            _settings.StartWithWindows = startWithWindows.Checked;
+            _settings.Save();
+            SetStartWithWindows(startWithWindows.Checked);
+        };
+        root.Controls.Add(startWithWindows);
+
+        return root;
+    }
+
+    /// <summary>Vertical stack of selectable cards (radio-style) choosing what happens right after a
+    /// screenshot capture completes — opening the editor immediately, showing a corner preview
+    /// that opens the editor on click, or doing nothing beyond the save/copy above.</summary>
+    private FlowLayoutPanel BuildAfterCaptureActionPicker(int y)
+    {
+        var container = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoSize = true,
+            Location = new Point(0, y)
+        };
+
+        var buttons = new Dictionary<AfterCaptureAction, Panel>();
+
+        Panel BuildOption(AfterCaptureAction action, string title, string description)
+        {
+            var btn = new Panel { Size = new Size(460, 44), Cursor = Cursors.Hand, Margin = new Padding(0, 0, 0, 6) };
+
+            btn.Paint += (_, e) =>
+            {
+                bool selected = _settings.AfterCaptureAction == action;
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+
+                using var bg = new SolidBrush(selected ? TerminalTheme.Surface0 : TerminalTheme.PanelBg);
+                e.Graphics.FillRectangle(bg, btn.ClientRectangle);
+                using var borderPen = new Pen(selected ? TerminalTheme.Accent : TerminalTheme.Border, selected ? 1.6f : 1f);
+                e.Graphics.DrawRectangle(borderPen, 0, 0, btn.Width - 1, btn.Height - 1);
+
+                var dotRect = new Rectangle(12, btn.Height / 2 - 6, 12, 12);
+                using var dotPen = new Pen(selected ? TerminalTheme.Accent : TerminalTheme.TextMuted, 1.4f);
+                e.Graphics.DrawEllipse(dotPen, dotRect);
+                if (selected)
+                {
+                    using var dotFill = new SolidBrush(TerminalTheme.Accent);
+                    e.Graphics.FillEllipse(dotFill, dotRect.X + 3, dotRect.Y + 3, 6, 6);
+                }
+
+                using var titleFont = new Font(MonoFont.FamilyName, 9f, FontStyle.Bold);
+                using var titleBrush = new SolidBrush(TerminalTheme.TextPrimary);
+                e.Graphics.DrawString(title, titleFont, titleBrush, 34, 6);
+
+                using var descFont = new Font(MonoFont.FamilyName, 7.8f);
+                using var descBrush = new SolidBrush(TerminalTheme.TextMuted);
+                e.Graphics.DrawString(description, descFont, descBrush, 34, 23);
+            };
+
+            btn.Click += (_, _) =>
+            {
+                _settings.AfterCaptureAction = action;
+                _settings.Save();
+                foreach (var b in buttons.Values) b.Invalidate();
+            };
+
+            buttons[action] = btn;
+            return btn;
+        }
+
+        container.Controls.Add(BuildOption(AfterCaptureAction.OpenEditor, "Open in editor", "Automatically opens the annotation editor after every capture."));
+        container.Controls.Add(BuildOption(AfterCaptureAction.ShowPreviewToast, "Show preview popup", "A small thumbnail appears in the corner — click it to open the editor."));
+        container.Controls.Add(BuildOption(AfterCaptureAction.DoNothing, "Do nothing", "Just saves/copies the capture silently — no window opens."));
+
+        return container;
+    }
 
     /// <summary>Four segmented buttons, each showing a mini window glyph with an accent bar on the
     /// edge it represents, so the option reads visually rather than just as text.</summary>
@@ -1103,6 +1321,14 @@ internal sealed class MainForm : Form
         menu.Items.Add("Capture Full Screen", null, (_, _) => CaptureFullScreen());
         menu.Items.Add("Record Region (GIF)", null, (_, _) => RecordGifRegion());
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Settings", null, (_, _) =>
+        {
+            Show();
+            WindowState = FormWindowState.Normal;
+            Activate();
+            ShowSection(_settingsPanel, null);
+        });
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) =>
         {
             _allowExit = true;
@@ -1139,6 +1365,7 @@ internal sealed class MainForm : Form
         foreach (var frame in _gifFrames) frame.Dispose();
         _gifBar?.Close();
         _gifBorder?.Close();
+        _captureToast?.Close();
 
         // Application.Run's message loop ends once this (the main) form closes, but any other
         // still-open top-level windows (editor/preview instances opened via .Show()) are on the
@@ -1156,14 +1383,17 @@ internal sealed class MainForm : Form
         if (_capturing || _gifTimer.Enabled) return;
         _capturing = true;
         bool wasVisible = Visible;
-        Hide();
-        Application.DoEvents();
-        Thread.Sleep(180);
+        if (_settings.HideWindowWhileCapturing && wasVisible)
+        {
+            Hide();
+            Application.DoEvents();
+            Thread.Sleep(180);
+        }
         try
         {
             using var selector = new RegionSelectorForm();
             var result = selector.ShowDialog();
-            if (wasVisible) { Show(); Activate(); }
+            if (wasVisible) { Show(); WindowState = FormWindowState.Normal; Activate(); }
             if (result == DialogResult.OK && selector.SelectedBitmap != null)
             {
                 HandleCapture(selector.SelectedBitmap);
@@ -1180,13 +1410,16 @@ internal sealed class MainForm : Form
         if (_capturing || _gifTimer.Enabled) return;
         _capturing = true;
         bool wasVisible = Visible;
-        Hide();
-        Application.DoEvents();
-        Thread.Sleep(180);
+        if (_settings.HideWindowWhileCapturing && wasVisible)
+        {
+            Hide();
+            Application.DoEvents();
+            Thread.Sleep(180);
+        }
         try
         {
             var bmp = CaptureService.CaptureAllScreens();
-            if (wasVisible) { Show(); Activate(); }
+            if (wasVisible) { Show(); WindowState = FormWindowState.Normal; Activate(); }
             HandleCapture(bmp);
         }
         finally
@@ -1217,12 +1450,40 @@ internal sealed class MainForm : Form
             Clipboard.SetImage(bmp);
         }
 
+        switch (_settings.AfterCaptureAction)
+        {
+            case AfterCaptureAction.DoNothing:
+                bmp.Dispose();
+                break;
+            case AfterCaptureAction.ShowPreviewToast:
+                ShowCapturePreviewToast(bmp, savePath);
+                break;
+            default:
+                OpenEditorForCapture(bmp, savePath);
+                break;
+        }
+
+        RefreshHistory();
+    }
+
+    private void OpenEditorForCapture(Bitmap bmp, string? savePath)
+    {
         var editor = new EditorForm(bmp, savePath);
         editor.FormClosed += (_, _) => RefreshHistory();
         editor.Show();
         editor.Activate();
+    }
 
-        RefreshHistory();
+    private void ShowCapturePreviewToast(Bitmap bmp, string? savePath)
+    {
+        // Replace any still-open toast from a previous capture rather than stacking them.
+        _captureToast?.Close();
+
+        var toast = new CapturePreviewToast(bmp, savePath);
+        toast.OpenRequested += (image, path) => OpenEditorForCapture(image, path);
+        toast.FormClosed += (_, _) => { if (_captureToast == toast) _captureToast = null; };
+        _captureToast = toast;
+        toast.Show();
     }
 
     // ---- GIF region recording ----
@@ -1247,6 +1508,7 @@ internal sealed class MainForm : Form
             else
             {
                 Show();
+                WindowState = FormWindowState.Normal;
                 Activate();
             }
         }
@@ -1337,6 +1599,7 @@ internal sealed class MainForm : Form
         _gifBorder = null;
 
         Show();
+        WindowState = FormWindowState.Normal;
         Activate();
 
         if (_gifFrames.Count < 2)

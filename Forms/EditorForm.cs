@@ -143,14 +143,24 @@ internal sealed class EditorForm : Form
         const int minClientWidth = 480, minClientHeight = 320;
         MinimumSize = SizeFromClientSize(new Size(minClientWidth, minClientHeight));
 
+        // The floating toolbar reserves a band along whichever edge it's docked to (see
+        // GetCanvasAvailableRect) — factored in here too so the window opens large enough, and the
+        // initial fit-to-window zoom is computed against, the space actually left for the image once
+        // that band is subtracted. Otherwise the image could render at a zoom level that still puts
+        // its own top rows directly under the toolbar.
+        bool toolbarVertical = _toolbarEdge is ToolbarEdge.Left or ToolbarEdge.Right;
+        int toolbarBand = TopGap * 2 + (toolbarVertical ? _toolbarForm.Width : _toolbarForm.Height);
+
         var screen = Screen.FromPoint(Cursor.Position).WorkingArea;
-        int w = Math.Min(_baseImage.Width + 40, screen.Width - 60);
-        int h = Math.Min(_baseImage.Height + 80, screen.Height - 60);
+        int w = Math.Min(_baseImage.Width + 40 + (toolbarVertical ? toolbarBand : 0), screen.Width - 60);
+        int h = Math.Min(_baseImage.Height + 80 + (toolbarVertical ? 0 : toolbarBand), screen.Height - 60);
         ClientSize = new Size(Math.Max(w, minClientWidth), Math.Max(h, minClientHeight));
 
         // Fit the whole screenshot inside the window it opened on, even when it was captured on a
         // larger/higher-res monitor than the one displaying the editor right now. Never upscale past 100%.
-        _zoom = Math.Min(1.0, Math.Min((double)ClientSize.Width / _baseImage.Width, (double)ClientSize.Height / _baseImage.Height));
+        int availW = ClientSize.Width - (toolbarVertical ? toolbarBand : 0);
+        int availH = ClientSize.Height - (toolbarVertical ? 0 : toolbarBand);
+        _zoom = Math.Min(1.0, Math.Min((double)availW / _baseImage.Width, (double)availH / _baseImage.Height));
         ApplyCanvasZoomSize();
 
         Move += (_, _) => { PositionToolbar(); PositionElementBar(); if (_overflowPopup != null) PositionOverflowPopup(); };
@@ -292,21 +302,45 @@ internal sealed class EditorForm : Form
 
     private void HideTip() => _hoverTip?.Hide();
 
+    /// <summary>The region of <see cref="_canvasHost"/> not covered by the floating toolbar — the
+    /// toolbar is a separate top-level window layered on top rather than a docked child, so nothing
+    /// in the normal layout system keeps it from overlapping the image on its own; every place that
+    /// positions or fits the canvas goes through this instead of the host's raw ClientSize.</summary>
+    private Rectangle GetCanvasAvailableRect()
+    {
+        var rect = _canvasHost.ClientRectangle;
+        // _canvasHost.Controls.Add(_canvas) / Controls.Add(_canvasHost) in the constructor trigger a
+        // layout pass (and with it, a Resize -> CenterCanvas -> here) before _toolbarForm is assigned.
+        if (_toolbarForm == null || !_toolbarForm.Visible) return rect;
+
+        int reserve = TopGap + (_toolbarEdge is ToolbarEdge.Left or ToolbarEdge.Right ? _toolbarForm.Width : _toolbarForm.Height) + TopGap;
+        return _toolbarEdge switch
+        {
+            ToolbarEdge.Bottom => new Rectangle(rect.X, rect.Y, rect.Width, Math.Max(0, rect.Height - reserve)),
+            ToolbarEdge.Left => new Rectangle(rect.X + reserve, rect.Y, Math.Max(0, rect.Width - reserve), rect.Height),
+            ToolbarEdge.Right => new Rectangle(rect.X, rect.Y, Math.Max(0, rect.Width - reserve), rect.Height),
+            _ => new Rectangle(rect.X, rect.Y + reserve, rect.Width, Math.Max(0, rect.Height - reserve)),
+        };
+    }
+
     private void CenterCanvas()
     {
-        int x = _canvasHost.ClientSize.Width > _canvas.Width ? (_canvasHost.ClientSize.Width - _canvas.Width) / 2 : 0;
-        int y = _canvasHost.ClientSize.Height > _canvas.Height ? (_canvasHost.ClientSize.Height - _canvas.Height) / 2 : 0;
+        var avail = GetCanvasAvailableRect();
+        int x = avail.Width > _canvas.Width ? avail.X + (avail.Width - _canvas.Width) / 2 : avail.X;
+        int y = avail.Height > _canvas.Height ? avail.Y + (avail.Height - _canvas.Height) / 2 : avail.Y;
         _canvas.Location = new Point(x, y);
     }
 
-    /// <summary>Keeps at least a sliver of the image within the visible board while panning, so it can't be dragged out of reach.</summary>
+    /// <summary>Keeps at least a sliver of the image within the visible board (and out from under the
+    /// toolbar) while panning, so it can't be dragged out of reach or behind the toolbar.</summary>
     private Point ClampCanvasToHost(Point loc)
     {
+        var avail = GetCanvasAvailableRect();
         const int minVisible = 60;
-        int minX = minVisible - _canvas.Width;
-        int maxX = _canvasHost.ClientSize.Width - minVisible;
-        int minY = minVisible - _canvas.Height;
-        int maxY = _canvasHost.ClientSize.Height - minVisible;
+        int minX = avail.X + minVisible - _canvas.Width;
+        int maxX = avail.Right - minVisible;
+        int minY = avail.Y + minVisible - _canvas.Height;
+        int maxY = avail.Bottom - minVisible;
 
         int x = maxX >= minX ? Math.Clamp(loc.X, minX, maxX) : loc.X;
         int y = maxY >= minY ? Math.Clamp(loc.Y, minY, maxY) : loc.Y;
@@ -395,6 +429,9 @@ internal sealed class EditorForm : Form
             _restoreButton.Visible = true;
             PositionRestoreButton();
         }
+
+        // Reclaim (or re-reserve) the band the toolbar occupies now that its visibility changed.
+        CenterCanvas();
 
         // Hiding/showing an owned window can otherwise leave the OS's activation state pointing at
         // whatever was behind it, dropping this editor window behind other apps on the monitor.
@@ -605,6 +642,7 @@ internal sealed class EditorForm : Form
         _toolbarForm.Controls.Add(flow);
         _toolbarForm.FitToContent(flow);
         ApplyOverflow();
+        CenterCanvas();
     }
 
     private static bool IsSeparator(Control c) => c.Tag as string == "separator";

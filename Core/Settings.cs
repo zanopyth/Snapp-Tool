@@ -13,6 +13,7 @@ internal sealed class AppSettings
     public bool AutoSaveAfterCapture { get; set; } = true;
     public bool AutoCopyToClipboard { get; set; } = true;
     public bool StartWithWindows { get; set; } = false;
+    public bool HideWindowWhileCapturing { get; set; } = true;
 
     public uint RegionModifiers { get; set; } = HotkeyUtil.MOD_CONTROL | HotkeyUtil.MOD_SHIFT;
     public int RegionKey { get; set; } = (int)Keys.S;
@@ -24,6 +25,9 @@ internal sealed class AppSettings
 
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public ToolbarEdge DefaultToolbarPosition { get; set; } = ToolbarEdge.Top;
+
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public AfterCaptureAction AfterCaptureAction { get; set; } = AfterCaptureAction.OpenEditor;
 
     private static string SettingsPath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SnapTool", "settings.json");
